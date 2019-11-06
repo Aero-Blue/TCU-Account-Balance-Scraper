@@ -3,12 +3,13 @@ from bs4 import BeautifulSoup
 import config
 from contextlib import closing
 
-PARSER = "lxml"
-TIMEOUT = 5
+# Constants
+PARSER = "lxml"  # Html parser for BeautifulSoup
+TIMEOUT = 5  # Request max_timeout (in seconds)
 
 
-def get_session_token(session):
-    credentials = {
+def get_session_token(session):  # Retrieve session token ID for Okta
+    credentials = {  # Okta credentials (set in config.py)
         "username": config.username,
         "password": config.password,
     }
@@ -25,7 +26,7 @@ def get_session_token(session):
         return session_token
 
 
-def get_redirect_url(session):
+def get_redirect_url(session):  # Scrape redirect URL for sso
     with closing(
         session.request(
             "GET", "https://get.cbord.com/tcu/full/login.php", timeout=TIMEOUT
@@ -38,8 +39,13 @@ def get_redirect_url(session):
         return redirect_url_tag.get("value")
 
 
-def auth_via_sso(session, session_token, redirect_url):
-    params = {"token": session_token, "redirectUrl": redirect_url}
+def auth_via_sso(
+    session, session_token, redirect_url
+):  # Get SAML response for sso request
+    params = {
+        "token": session_token,
+        "redirectUrl": redirect_url,
+    }  # from get_session_token and get_redirect_url
     with closing(
         session.request(
             "GET",
@@ -56,7 +62,9 @@ def auth_via_sso(session, session_token, redirect_url):
         ]
 
 
-def get_funds_home(session):
+def get_funds_home(
+    session,
+):  # Visit web homepage in order to get userId and formToken to get overview
     with closing(
         session.request(
             "GET", "https://get.cbord.com/tcu/full/funds_home.php", timeout=TIMEOUT
@@ -73,7 +81,7 @@ def get_funds_home(session):
         return dict(userId=user_id, formToken=form_token)
 
 
-def get_funds_overview(session, params):
+def get_funds_overview(session, params):  # Funds request via php (JSON response)
     with closing(
         session.request(
             "POST",
@@ -86,7 +94,7 @@ def get_funds_overview(session, params):
         return BeautifulSoup(response.text, PARSER).find("table").find_all("tr")[1:]
 
 
-def get_current_account_balances(session):
+def get_current_account_balances(session):  # Get html table
     session.request(
         "POST",
         "https://get.cbord.com/tcu/Shibboleth.sso/SAML2/POST",
@@ -94,14 +102,16 @@ def get_current_account_balances(session):
             session, get_session_token(session), get_redirect_url(session)
         ),
         timeout=TIMEOUT,
-    )
+    )  # REQUIRED request for __shibsession_ cookie
     funds_overview = get_funds_overview(session, get_funds_home(session))
     return funds_table_to_dict(funds_overview)
 
 
-def funds_table_to_dict(html_table):
+def funds_table_to_dict(
+    html_table,
+):  # Convert html table to dictionary: f{"Account name": "Balance"}
     def get_account_name(row):
-        tags = ["(refundable)", "(non-refundable)"]
+        tags = ["(refundable)", "(non-refundable)"]  # Filter out extraneous ids
         account_name = row.find("td", class_="first-child account_name").get_text()
         for tag in tags:
             if tag in account_name:
@@ -113,15 +123,18 @@ def funds_table_to_dict(html_table):
         balance = row.find("td", class_="last-child balance").get_text()
         return balance
 
-    table_dict = {get_account_name(row): get_balance(row) for row in html_table}
+    table_dict = {
+        get_account_name(row): get_balance(row) for row in html_table
+    }  # Formatting dict
 
     return table_dict
 
 
 def main():
-    with requests.Session() as session:
+    with requests.Session() as session:  # Entering Session
         balances = get_current_account_balances(session)
-    for acc, bal in balances.items():
+        # Exiting session
+    for acc, bal in balances.items():  # Printing output
         print(f"{acc} | Balance: {bal}")
 
 
