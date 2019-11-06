@@ -1,48 +1,36 @@
-from requests import Session
-from bs4 import BeautifulSoup as bs
+import requests
+from bs4 import BeautifulSoup
 from config import username, password
-import json
+from contextlib import closing
+PARSER = 'lxml'
 
 
 def main():
-    session = Session()
     ###
-    login_page = session.request("GET","https://get.cbord.com/tcu/full/login.php")
-    from_uri = bs(login_page.text, "lxml").select_one("#fromURI").get("value")
-    session.headers.update({"Content-Type": "application/json"})
-    _json = {
-        "password": password,
-        "username": username,
-        "options": dict(warnBeforePasswordExpired="true",multiOptionalFactorEnroll="true")
-    }
-    json_resp = session.request("POST", "https://tcu.okta.com/api/v1/authn", json=_json)
-    session_token = json.loads(json_resp.content)['sessionToken']
+    with requests.Session() as s:
+        with closing(s.get('https://get.cbord.com/tcu/full/login.php')) as r:
+            fromURI = BeautifulSoup(r.text, PARSER).select_one('#fromURI').get('value')
+
+        with closing(s.post('https://tcu.okta.com/api/v1/authn', json=dict(username=username, password=password))) as r:
+            sessionToken = r.json()['sessionToken']
+
+        with closing(s.get('https://tcu.okta.com/login/sessionCookieRedirect', params=dict(token=sessionToken, redirectUrl=fromURI))) as r:
+            data = {desired_elem.get('name'): desired_elem.get('value') for desired_elem in
+                    BeautifulSoup(r.text, PARSER).find_all('input')}
+
+        s.post('https://get.cbord.com/tcu/Shibboleth.sso/SAML2/POST', data=data)  #application/x-www-form-urlencoded
     ###
-    params = {
-        "checkAccountSetupComplete":"True",
-        "token": session_token,
-        "redirectUrl": from_uri
-    }
-    redirect_resp = session.request("GET", "https://tcu.okta.com/login/sessionCookieRedirect", params=params)
-    data = {desired_elem.get("name"): desired_elem.get("value") for desired_elem in bs(redirect_resp.text, "lxml").find_all("input")}
-    session.headers.update({"Content-Type": "application/x-www-form-urlencoded"})
-    session.request("POST", "https://get.cbord.com/tcu/Shibboleth.sso/SAML2/POST", data=data)
-    ###
-    funds_home = session.request("GET", "https://get.cbord.com/tcu/full/funds_home.php")
-    soup = bs(funds_home.text, "lxml")
-    user_id = soup.find("option", text="Frog Bucks (refundable)").get("value").split(":")[2]
-    form_token = soup.find(attrs={"name": "formToken", "type": "hidden"}).get("value")
-    session.headers.update({
-            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-            "Referrer": "https://get.cbord.com/tcu/full/funds_home.php",
-            "X-Requested-With": "XMLHttpRequest"
-        })
-    funds_overview = session.request("POST", "https://get.cbord.com/tcu/full/funds_overview_partial.php", data=dict(userId=user_id, formToken=form_token))
-    return table_to_dict(bs(funds_overview.text, "lxml").find("table").find_all("tr")[1:])
+        with closing(s.get('https://get.cbord.com/tcu/full/funds_home.php')) as r:
+            soup = BeautifulSoup(r.text, PARSER)
+            userId = soup.find('option', text='Frog Bucks (refundable)').get('value').split(':')[2]
+            formToken = soup.find(attrs=dict(name='formToken', type='hidden')).get('value')
+
+        with closing(s.post('https://get.cbord.com/tcu/full/funds_overview_partial.php', data=dict(userId=userId, formToken=formToken))) as r:
+            return table_to_dict(BeautifulSoup(r.text, PARSER).find('table').find_all('tr')[1:])
 
 
 def table_to_dict(table):
-    return {row.find("td", class_="first-child account_name").text: row.find("td", class_="last-child balance").text for row in table}
+    return {row.find('td', class_='first-child account_name').text: row.find('td', class_='last-child balance').text for row in table}
 
 
 if __name__ == "__main__":
