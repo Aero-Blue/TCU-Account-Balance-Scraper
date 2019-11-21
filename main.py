@@ -1,98 +1,74 @@
-from pprint import pprint
-
+import configparser
 import requests
 from bs4 import BeautifulSoup
 
-import config
-
 # Constants
 PARSER = "lxml"  # Html parser for BeautifulSoup
-TIMEOUT = 5  # Request max_timeout (in seconds)
+session = requests.Session()
 
 
-class SessionToken(object):
-    def __init__(self, s):
-        # TCU login / Okta login (Not your email!)
-        credentials = dict(username=config.username, password=config.password)
-        resp = s.post("https://tcu.okta.com/api/v1/authn", json=credentials)  # Auth credentials
-        self.value = resp.json()["sessionToken"]  # Session token value (str)
-
-    def __repr__(self):
-        return self.value
+def get_session_token(**kwargs):
+    with session.post("https://tcu.okta.com/api/v1/authn", json=kwargs,) as response:
+        token = response.json()["sessionToken"]
+        return token
 
 
-class RedirectUrl(object):
-    def __init__(self, s):
-        resp = s.get("https://get.cbord.com/tcu/full/login.php")  # Login page contains static link
-        soup = BeautifulSoup(resp.text, PARSER)
-        self.value = soup.select_one("#fromURI").get("value")  # Link needed for session cookie redirect
-
-    def __repr__(self):
-        return self.value
+def get_redirect_url():
+    with session.get("https://get.cbord.com/tcu/full/login.php") as response:
+        page = BeautifulSoup(response.text, PARSER)
+        redirect_url = page.select_one("#fromURI").get("value")
+        return redirect_url
 
 
-class UserId(object):
-    def __init__(self, resp):
-        soup = BeautifulSoup(resp.text, PARSER)
-        self.value = (
-            soup.find("option", text="Frog Bucks (refundable)")
+def get_user_values():
+    with session.get("https://get.cbord.com/tcu/full/funds_home.php") as response:
+        page = BeautifulSoup(response.text, PARSER)
+        form_token = page.find(attrs=dict(name="formToken", type="hidden")).get("value")
+        user_id = (
+            page.find("option", text="Frog Bucks (refundable)")
             .get("value")
             .split(":")[2]
         )
-
-    def __repr__(self):
-        return self.value
-        
-        
-class FormToken(object):
-    def __init__(self, resp):
-        soup = BeautifulSoup(resp.text, PARSER)
-        self.value = soup.find(attrs=dict(name="formToken", type="hidden")).get("value")
-
-    def __repr__(self):
-        return self.value
+        return user_id, form_token
 
 
-class Table(object):
-    def __init__(self, s):
-        with s.get("https://get.cbord.com/tcu/full/funds_home.php") as resp:
-            payload = dict(userId=UserId(resp), formToken=FormToken(resp))
-        resp = s.post("https://get.cbord.com/tcu/full/funds_overview_partial.php", data=payload)
-        soup = BeautifulSoup(resp.text, PARSER)
-        self.table = soup.select("tbody > tr")
-        self.dict = self.to_dict()
-        
-    def to_dict(self):
-        def get_account_name(row):
-            tags = ["(refundable)", "(non-refundable)"]  # Filter out extraneous ids
-            account_name = row.select_one("td.first-child").get_text()
-            for tag in tags:
-                if tag in account_name:
-                    account_name = account_name[: account_name.find(tag)].strip()
-
-            return account_name
-
-        def get_balance(row):
-            balance = row.select_one("td.last-child").get_text()
-            return balance
-
-        table_dict = {
-            get_account_name(row): get_balance(row) for row in self.table
-        }  # Formatting dict
-        return table_dict
-
-    def bal(self, account_name):
-        return self.dict[account_name]
+def get_funds_overview(user_id, form_token):
+    payload = {"userId": user_id, "formToken": form_token}
+    session.post(
+        "https://get.cbord.com/tcu/full/funds_overview_partial.php", data=payload
+    )
 
 
-def auth(s):
-    params = dict(token=SessionToken(session), redirectUrl=RedirectUrl(session))  # Build query params for request
-    resp = s.get("https://tcu.okta.com/login/sessionCookieRedirect", params=params)  # cookie redirect
-    soup = BeautifulSoup(resp.text, PARSER)
-    return {desired_elem.get("name"): desired_elem.get("value") for desired_elem in soup.find_all("input")}
+def session_redirect(**kwargs):
+    with session.get(
+        "https://tcu.okta.com/login/sessionCookieRedirect", params=kwargs
+    ) as response:
+        page = BeautifulSoup(response.text, PARSER)
+        desired_elems = {
+            desired_elem.get("name"): desired_elem.get("value")
+            for desired_elem in page.find_all("input")
+        }
+        session.post(
+            "https://get.cbord.com/tcu/Shibboleth.sso/SAML2/POST", data=desired_elems
+        )
+
+
+def get_account_balances(**kwargs):
+    with session.get("https://get.cbord.com/tcu/full/funds_home.php") as response:
+        response = session.post(
+            "https://get.cbord.com/tcu/full/funds_overview_partial.php", data=kwargs
+        )
+        page = BeautifulSoup(response.text, PARSER)
+        table = page.select("tbody > tr")
+    return table
 
 
 if __name__ == "__main__":
-    with requests.Session() as session:
-        session.post("https://get.cbord.com/tcu/Shibboleth.sso/SAML2/POST", data=auth(session))
-        pprint(Table(session).dict)  # Get an account balance
+    cfg = configparser.ConfigParser()
+    cfg.read("config.ini")
+    session_token = get_session_token(**cfg["CREDENTIALS"])
+    redirect_url = get_redirect_url()
+    session_redirect(token=session_token, redirectUrl=redirect_url)
+    user_id, form_token = get_user_values()
+    account_balances = get_account_balances(userId=user_id, formToken=form_token)
+    print(account_balances)
