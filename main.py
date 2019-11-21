@@ -32,13 +32,6 @@ def get_user_values():
         return user_id, form_token
 
 
-def get_funds_overview(user_id, form_token):
-    payload = {"userId": user_id, "formToken": form_token}
-    session.post(
-        "https://get.cbord.com/tcu/full/funds_overview_partial.php", data=payload
-    )
-
-
 def session_redirect(**kwargs):
     with session.get(
         "https://tcu.okta.com/login/sessionCookieRedirect", params=kwargs
@@ -71,4 +64,5 @@ if __name__ == "__main__":
     session_redirect(token=session_token, redirectUrl=redirect_url)
     user_id, form_token = get_user_values()
     account_balances = get_account_balances(userId=user_id, formToken=form_token)
-    print(account_balances)
+    for balance in account_balances:
+        print(balance.text)
